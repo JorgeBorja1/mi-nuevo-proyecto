@@ -13,8 +13,7 @@ import {
   Users
 } from 'lucide-react';
 
-const APPS_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbzuRANXakPT_Lk6zniJlJFC-sIjEMP1bhX02m8BY7Yag4kD9hidoDbVLZVck9utZt-_/exec';
+const STORAGE_KEY = 'libro_obra_picapiedra_registros_v1';
 
 const crearNuevoRegistroVacio = () => ({
   id: Date.now().toString(),
@@ -65,6 +64,21 @@ const crearNuevoRegistroVacio = () => ({
 const calcularTotalPersonal = (personal = []) =>
   personal.reduce((acc, item) => acc + (Number(item.cantidad) || 0), 0);
 
+const leerRegistrosLocales = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const escribirRegistrosLocales = (lista) => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(lista));
+};
+
 export default function App() {
   const [registros, setRegistros] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -74,43 +88,19 @@ export default function App() {
   const [pasoCreacion, setPasoCreacion] = useState('datos_iniciales');
   const [copiado, setCopiado] = useState(false);
 
-  const cargarRegistrosDesdeDrive = async () => {
+  const cargarRegistros = () => {
     setCargando(true);
     try {
-      const res = await fetch(APPS_SCRIPT_URL, { method: 'GET' });
-      const texto = await res.text();
-      const data = JSON.parse(texto);
-      if (data.ok && Array.isArray(data.registros)) {
-        setRegistros(data.registros);
-      }
-    } catch (error) {
-      console.error('Error al cargar desde Google Drive:', error);
+      const data = leerRegistrosLocales();
+      setRegistros(data);
     } finally {
       setCargando(false);
     }
   };
 
   useEffect(() => {
-    cargarRegistrosDesdeDrive();
+    cargarRegistros();
   }, []);
-
-  const persistirRegistroEnDrive = async (reg) => {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: 'upsert', registro: reg })
-    });
-    const texto = await res.text();
-    let data;
-    try {
-      data = JSON.parse(texto);
-    } catch {
-      throw new Error('Respuesta no JSON de Apps Script: ' + texto.slice(0, 180));
-    }
-    if (!data.ok) {
-      throw new Error(data.error || 'Error al guardar en Drive');
-    }
-  };
 
   const abrirNuevoCasillero = () => {
     const nuevo = crearNuevoRegistroVacio();
@@ -139,49 +129,53 @@ export default function App() {
     setVista('formulario');
   };
 
-  const duplicarRegistro = async (reg, e) => {
+  const duplicarRegistro = (reg, e) => {
     e.stopPropagation();
     const clon = JSON.parse(JSON.stringify(reg));
     clon.id = Date.now().toString();
     clon.fecha = new Date().toISOString().split('T')[0];
     try {
-      await persistirRegistroEnDrive(clon);
-      await cargarRegistrosDesdeDrive();
+      const actualizados = [clon, ...registros];
+      escribirRegistrosLocales(actualizados);
+      setRegistros(actualizados);
     } catch (err) {
-      alert('No se pudo duplicar: ' + (err?.message || err));
+      alert('No se pudo duplicar (posible falta de espacio en el navegador): ' + (err?.message || err));
     }
   };
 
-  const guardarRegistro = async () => {
-    if (!registroActual.nombreApellido.trim()) {
+  const guardarRegistro = () => {
+    if (!registroActual || !registroActual.nombreApellido.trim()) {
       alert('Por favor ingresa tu Nombre y Apellido.');
       return;
     }
     setGuardando(true);
     try {
-      await persistirRegistroEnDrive(registroActual);
-      await cargarRegistrosDesdeDrive();
+      const { cuadrillas, ...registroLimpio } = registroActual;
+      const existe = registros.some((r) => r.id === registroLimpio.id);
+      const actualizados = existe
+        ? registros.map((r) => (r.id === registroLimpio.id ? registroLimpio : r))
+        : [registroLimpio, ...registros];
+
+      escribirRegistrosLocales(actualizados);
+      setRegistros(actualizados);
       setVista('casillero');
     } catch (err) {
-      alert('Detalle del error: ' + (err?.message || String(err)));
+      alert(
+        'No se pudo guardar en el navegador (si subiste muchas fotos, intenta borrar alguna o reducir cantidad): ' +
+          (err?.message || String(err))
+      );
     } finally {
       setGuardando(false);
     }
   };
 
-  const eliminarRegistro = async (id, e) => {
+  const eliminarRegistro = (id, e) => {
     e.stopPropagation();
     if (!confirm('¿Seguro que deseas eliminar este casillero del libro de obra?')) return;
     try {
-      const res = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'delete', id })
-      });
-      const texto = await res.text();
-      const data = JSON.parse(texto);
-      if (!data.ok) throw new Error(data.error);
-      setRegistros((prev) => prev.filter((r) => r.id !== id));
+      const filtrados = registros.filter((r) => r.id !== id);
+      escribirRegistrosLocales(filtrados);
+      setRegistros(filtrados);
     } catch (err) {
       alert('No se pudo eliminar: ' + (err?.message || err));
     }
@@ -273,7 +267,7 @@ export default function App() {
 
           {cargando ? (
             <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-sm text-[#575656]">
-              Cargando registros desde Google Drive...
+              Cargando registros...
             </div>
           ) : registros.length === 0 ? (
             <div className="bg-white rounded-2xl border-2 border-dashed border-[#26348B]/30 p-12 text-center shadow-sm transition-all duration-300">
@@ -747,7 +741,7 @@ export default function App() {
                   value={act.item}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].item = e.target.value;
+                    copia[idx] = { ...copia[idx], item: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
@@ -757,7 +751,7 @@ export default function App() {
                   value={act.actividad}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].actividad = e.target.value;
+                    copia[idx] = { ...copia[idx], actividad: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-4 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -767,7 +761,7 @@ export default function App() {
                   value={act.area}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].area = e.target.value;
+                    copia[idx] = { ...copia[idx], area: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -777,7 +771,7 @@ export default function App() {
                   value={act.responsable}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].responsable = e.target.value;
+                    copia[idx] = { ...copia[idx], responsable: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -787,7 +781,7 @@ export default function App() {
                   value={act.avance}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].avance = e.target.value;
+                    copia[idx] = { ...copia[idx], avance: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
@@ -797,7 +791,7 @@ export default function App() {
                   value={act.observaciones}
                   onChange={(e) => {
                     const copia = [...registroActual.actividades];
-                    copia[idx].observaciones = e.target.value;
+                    copia[idx] = { ...copia[idx], observaciones: e.target.value };
                     setRegistroActual({ ...registroActual, actividades: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -845,7 +839,7 @@ export default function App() {
                   value={mat.item}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].item = e.target.value;
+                    copia[idx] = { ...copia[idx], item: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-1 border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
@@ -855,7 +849,7 @@ export default function App() {
                   value={mat.material}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].material = e.target.value;
+                    copia[idx] = { ...copia[idx], material: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-3 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -865,7 +859,7 @@ export default function App() {
                   value={mat.cantidad}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].cantidad = e.target.value;
+                    copia[idx] = { ...copia[idx], cantidad: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -875,7 +869,7 @@ export default function App() {
                   value={mat.unidad}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].unidad = e.target.value;
+                    copia[idx] = { ...copia[idx], unidad: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -885,7 +879,7 @@ export default function App() {
                   value={mat.proveedor}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].proveedor = e.target.value;
+                    copia[idx] = { ...copia[idx], proveedor: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -895,7 +889,7 @@ export default function App() {
                   value={mat.observaciones}
                   onChange={(e) => {
                     const copia = [...registroActual.materiales];
-                    copia[idx].observaciones = e.target.value;
+                    copia[idx] = { ...copia[idx], observaciones: e.target.value };
                     setRegistroActual({ ...registroActual, materiales: copia });
                   }}
                   className="sm:col-span-2 border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white"
@@ -934,7 +928,7 @@ export default function App() {
                     value={per.cargo}
                     onChange={(e) => {
                       const copia = [...registroActual.personal];
-                      copia[idx].cargo = e.target.value;
+                      copia[idx] = { ...copia[idx], cargo: e.target.value };
                       setRegistroActual({ ...registroActual, personal: copia });
                     }}
                     className="flex-1 border border-slate-300 rounded-lg px-3 py-2"
@@ -945,7 +939,7 @@ export default function App() {
                     value={per.cantidad}
                     onChange={(e) => {
                       const copia = [...registroActual.personal];
-                      copia[idx].cantidad = e.target.value;
+                      copia[idx] = { ...copia[idx], cantidad: e.target.value };
                       setRegistroActual({ ...registroActual, personal: copia });
                     }}
                     className="w-24 border border-slate-300 rounded-lg px-3 py-2"
